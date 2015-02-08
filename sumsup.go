@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"unicode"
 )
 
@@ -21,10 +20,12 @@ Usage: sumsup [options] [FILE]...
   -n: dryrun
   -u: update
 
-  sumsup FILE...                 Calculate checksum
-  sumsup -c SHA256SUMS           Check
-  sumsup -u SHA256SUMS [FILE]... Update checksum for files newer than SHA256SUMS
-                                 And add/delete record from SHA256SUMS
+  sumsup FILE...            Calculate checksum
+  sumsup -c SHA256SUMS      Check
+  sumsup -u SHA256SUMS [FILE]...
+                            Update record if timestamp is newer than SHA256SUMS
+                            Delete record if file is not exist
+                            Add record for FILEs
 `)
 }
 
@@ -144,6 +145,7 @@ func cmd_check() error {
 	return nil
 }
 
+// XXX: sort or not sort process/result order?
 func cmd_update() error {
 	sumsfile := flag.Arg(0)
 	files := flag.Args()[1:]
@@ -158,12 +160,30 @@ func cmd_update() error {
 		return err
 	}
 
-	db := map[string]Record{}
+	newrecords := make([]Record, 0, len(records))
+	done := map[string]bool{}
+
 	for _, record := range records {
-		db[record.path] = record
+		done[record.path] = true
+		info, err := os.Stat(record.path)
+		if err == nil {
+			if info.ModTime().After(sumsfileinfo.ModTime()) {
+				fmt.Printf("%s: MODIFIED\n", record.path)
+				if !*flag_dryrun {
+					record.checksum, err = sha256sum(record.path)
+					if err != nil {
+						return err
+					}
+				}
+			}
+			newrecords = append(newrecords, record)
+		} else if os.IsNotExist(err) {
+			fmt.Printf("%s: DELETED\n", record.path)
+		} else {
+			return err
+		}
 	}
 
-	fs := map[string]os.FileInfo{}
 	for _, root := range files {
 		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
@@ -173,68 +193,13 @@ func cmd_update() error {
 				return nil
 			}
 			// Ignore SUMSFILE
-			if !os.SameFile(sumsfileinfo, info) {
-				fs[path] = info
+			if os.SameFile(sumsfileinfo, info) {
+				return nil
 			}
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	// [*] Select recorded files by default.
-	// [ ] Delete recorded files which is not selected by argument.
-	for path := range db {
-		if _, ok := fs[path]; ok {
-			continue
-		}
-		info, err := os.Stat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
+			if done[path] {
+				return nil
 			}
-			return err
-		}
-		fs[path] = info
-	}
-
-	uniq := make(map[string]bool, len(db)+len(fs))
-	for path := range db {
-		uniq[path] = true
-	}
-	for path := range fs {
-		uniq[path] = true
-	}
-
-	allfile := make([]string, 0, len(uniq))
-	for path := range uniq {
-		allfile = append(allfile, path)
-	}
-	sort.Strings(allfile)
-
-	newrecords := make([]Record, 0, len(fs))
-	for _, path := range allfile {
-		_, db_has := db[path]
-		_, fs_has := fs[path]
-		if db_has && fs_has {
-			if fs[path].ModTime().After(sumsfileinfo.ModTime()) {
-				fmt.Printf("%s: MODIFIED\n", path)
-				if !*flag_dryrun {
-					checksum, err := sha256sum(path)
-					if err != nil {
-						return err
-					}
-					newrecords = append(newrecords, Record{checksum, true, path})
-				}
-			} else {
-				// verbose
-				// fmt.Printf("%s: CACHED\n", path)
-				if !*flag_dryrun {
-					newrecords = append(newrecords, db[path])
-				}
-			}
-		} else if fs_has {
+			done[path] = true
 			fmt.Printf("%s: ADDED\n", path)
 			if !*flag_dryrun {
 				checksum, err := sha256sum(path)
@@ -243,8 +208,10 @@ func cmd_update() error {
 				}
 				newrecords = append(newrecords, Record{checksum, true, path})
 			}
-		} else {
-			fmt.Printf("%s: DELETED\n", path)
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 	}
 
