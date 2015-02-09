@@ -164,22 +164,6 @@ func cmd_update() error {
 	fs := map[string]os.FileInfo{}
 	todo := make([]string, 0, len(records))
 
-	for _, record := range records {
-		db[record.path] = record
-		if _, ok := fs[record.path]; ok {
-			continue
-		}
-		info, err := os.Stat(record.path)
-		if err == nil {
-			fs[record.path] = info
-			todo = append(todo, record.path)
-		} else if os.IsNotExist(err) {
-			todo = append(todo, record.path)
-		} else {
-			return err
-		}
-	}
-
 	for _, root := range files {
 		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
@@ -200,6 +184,22 @@ func cmd_update() error {
 			return nil
 		})
 		if err != nil {
+			return err
+		}
+	}
+
+	for _, record := range records {
+		db[record.path] = record
+		if _, ok := fs[record.path]; ok {
+			continue
+		}
+		info, err := os.Stat(record.path)
+		if err == nil {
+			fs[record.path] = info
+			todo = append(todo, record.path)
+		} else if os.IsNotExist(err) {
+			todo = append(todo, record.path)
+		} else {
 			return err
 		}
 	}
