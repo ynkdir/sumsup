@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"unicode"
 )
 
@@ -145,7 +146,6 @@ func cmd_check() error {
 	return nil
 }
 
-// XXX: sort or not sort process/result order?
 func cmd_update() error {
 	sumsfile := flag.Arg(0)
 	files := flag.Args()[1:]
@@ -160,25 +160,21 @@ func cmd_update() error {
 		return err
 	}
 
-	newrecords := make([]Record, 0, len(records))
-	done := map[string]bool{}
+	db := map[string]Record{}
+	fs := map[string]os.FileInfo{}
+	todo := make([]string, 0, len(records))
 
 	for _, record := range records {
-		done[record.path] = true
+		db[record.path] = record
+		if _, ok := fs[record.path]; ok {
+			continue
+		}
 		info, err := os.Stat(record.path)
 		if err == nil {
-			if info.ModTime().After(sumsfileinfo.ModTime()) {
-				fmt.Printf("%s: MODIFIED\n", record.path)
-				if !*flag_dryrun {
-					record.checksum, err = sha256sum(record.path)
-					if err != nil {
-						return err
-					}
-				}
-			}
-			newrecords = append(newrecords, record)
+			fs[record.path] = info
+			todo = append(todo, record.path)
 		} else if os.IsNotExist(err) {
-			fmt.Printf("%s: DELETED\n", record.path)
+			todo = append(todo, record.path)
 		} else {
 			return err
 		}
@@ -196,10 +192,26 @@ func cmd_update() error {
 			if os.SameFile(sumsfileinfo, info) {
 				return nil
 			}
-			if done[path] {
+			if _, ok := fs[path]; ok {
 				return nil
 			}
-			done[path] = true
+			fs[path] = info
+			todo = append(todo, path)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	sort.Strings(todo)
+
+	newrecords := make([]Record, 0, len(todo))
+
+	for _, path := range todo {
+		if _, ok := fs[path]; !ok {
+			fmt.Printf("%s: DELETED\n", path)
+		} else if _, ok := db[path]; !ok {
 			fmt.Printf("%s: ADDED\n", path)
 			if !*flag_dryrun {
 				checksum, err := sha256sum(path)
@@ -208,10 +220,19 @@ func cmd_update() error {
 				}
 				newrecords = append(newrecords, Record{checksum, true, path})
 			}
-			return nil
-		})
-		if err != nil {
-			return err
+		} else if fs[path].ModTime().After(sumsfileinfo.ModTime()) {
+			fmt.Printf("%s: MODIFIED\n", path)
+			if !*flag_dryrun {
+				checksum, err := sha256sum(path)
+				if err != nil {
+					return err
+				}
+				newrecords = append(newrecords, Record{checksum, true, path})
+			}
+		} else {
+			if !*flag_dryrun {
+				newrecords = append(newrecords, db[path])
+			}
 		}
 	}
 
