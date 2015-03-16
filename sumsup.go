@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"flag"
 	"fmt"
+	"golang.org/x/text/unicode/norm"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"unicode"
 )
 
@@ -18,20 +20,15 @@ func usage() {
 Usage: sumsup [options] [FILE]...
 
   -c: check
-  -n: dryrun
   -u: update
 
-  sumsup FILE...            Calculate checksum
-  sumsup -c SHA256SUMS      Check
-  sumsup -u SHA256SUMS [FILE]...
-                            Update record if timestamp is newer than SHA256SUMS
-                            Delete record if file is not exist
-                            Add record for FILEs
+  sumsup FILE...         Calculate
+  sumsup -c SHA256SUMS   Check
+  sumsup -u SHA256SUMS   Update
 `)
 }
 
 var flag_check = flag.Bool("c", false, "check")
-var flag_dryrun = flag.Bool("n", false, "dryrun")
 var flag_update = flag.Bool("u", false, "update")
 
 // XXX: I can ignore text mode?
@@ -39,6 +36,11 @@ type Record struct {
 	checksum string
 	bin      bool
 	path     string
+}
+
+type FileRecord struct {
+	path string
+	info os.FileInfo
 }
 
 func sha256sum(filepath string) (string, error) {
@@ -126,6 +128,32 @@ func writesumsfile(path string, records []Record) error {
 	return nil
 }
 
+func findfile(root string) ([]FileRecord, error) {
+	files := []FileRecord{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		files = append(files, FileRecord{path, info})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func normalize_for_key(path string) string {
+	return strings.ToLower(norm.NFC.String(path))
+}
+
+func normalize_for_record(path string) string {
+	return norm.NFC.String(path)
+}
+
 func cmd_check() error {
 	sumsfile := flag.Arg(0)
 	records, err := readsumsfile(sumsfile)
@@ -148,7 +176,7 @@ func cmd_check() error {
 
 func cmd_update() error {
 	sumsfile := flag.Arg(0)
-	files := flag.Args()[1:]
+	root := "."
 
 	sumsfileinfo, err := os.Stat(sumsfile)
 	if err != nil {
@@ -161,86 +189,70 @@ func cmd_update() error {
 	}
 
 	db := map[string]Record{}
-	fs := map[string]os.FileInfo{}
-	todo := make([]string, 0, len(records))
-
-	for _, root := range files {
-		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-			if info.IsDir() {
-				return nil
-			}
-			// Ignore SUMSFILE
-			if os.SameFile(sumsfileinfo, info) {
-				return nil
-			}
-			if _, ok := fs[path]; ok {
-				return nil
-			}
-			fs[path] = info
-			todo = append(todo, path)
-			return nil
-		})
-		if err != nil {
-			return err
-		}
+	for _, record := range records {
+		npath := normalize_for_key(record.path)
+		db[npath] = record
 	}
 
-	for _, record := range records {
-		db[record.path] = record
-		if _, ok := fs[record.path]; ok {
+	files, err := findfile(root)
+	if err != nil {
+		return err
+	}
+
+	fs := map[string]FileRecord{}
+	for _, file := range files {
+		// Ignore SUMSFILE
+		if os.SameFile(sumsfileinfo, file.info) {
 			continue
 		}
-		info, err := os.Stat(record.path)
-		if err == nil {
-			fs[record.path] = info
-			todo = append(todo, record.path)
-		} else if os.IsNotExist(err) {
-			todo = append(todo, record.path)
-		} else {
-			return err
+		// Ignore dot file
+		if strings.HasPrefix(file.info.Name(), ".") {
+			continue
 		}
+		npath := normalize_for_key(file.path)
+		fs[npath] = file
 	}
 
+	uniq := map[string]bool{}
+	for npath, _ := range db {
+		uniq[npath] = true
+	}
+	for npath, _ := range fs {
+		uniq[npath] = true
+	}
+
+	todo := make([]string, 0, len(uniq))
+	for npath, _ := range uniq {
+		todo = append(todo, npath)
+	}
 	sort.Strings(todo)
 
 	newrecords := make([]Record, 0, len(todo))
-
-	for _, path := range todo {
-		if _, ok := fs[path]; !ok {
-			fmt.Printf("%s: DELETED\n", path)
-		} else if _, ok := db[path]; !ok {
-			fmt.Printf("%s: ADDED\n", path)
-			if !*flag_dryrun {
-				checksum, err := sha256sum(path)
-				if err != nil {
-					return err
-				}
-				newrecords = append(newrecords, Record{checksum, true, path})
+	for _, npath := range todo {
+		if _, ok := fs[npath]; !ok {
+			fmt.Printf("%s: DELETED\n", db[npath].path)
+		} else if _, ok := db[npath]; !ok {
+			fmt.Printf("%s: ADDED\n", fs[npath].path)
+			checksum, err := sha256sum(fs[npath].path)
+			if err != nil {
+				return err
 			}
-		} else if fs[path].ModTime().After(sumsfileinfo.ModTime()) {
-			fmt.Printf("%s: MODIFIED\n", path)
-			if !*flag_dryrun {
-				checksum, err := sha256sum(path)
-				if err != nil {
-					return err
-				}
-				newrecords = append(newrecords, Record{checksum, true, path})
+			newrecords = append(newrecords, Record{checksum, true, normalize_for_record(fs[npath].path)})
+		} else if fs[npath].info.ModTime().After(sumsfileinfo.ModTime()) {
+			fmt.Printf("%s: MODIFIED\n", fs[npath].path)
+			checksum, err := sha256sum(fs[npath].path)
+			if err != nil {
+				return err
 			}
+			newrecords = append(newrecords, Record{checksum, true, normalize_for_record(fs[npath].path)})
 		} else {
-			if !*flag_dryrun {
-				newrecords = append(newrecords, db[path])
-			}
+			newrecords = append(newrecords, db[npath])
 		}
 	}
 
-	if !*flag_dryrun {
-		err = writesumsfile(sumsfile, newrecords)
-		if err != nil {
-			return err
-		}
+	err = writesumsfile(sumsfile, newrecords)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -283,7 +295,7 @@ func main() {
 			log.Fatal(err)
 		}
 	} else if *flag_update {
-		if flag.NArg() < 1 {
+		if flag.NArg() != 1 {
 			flag.Usage()
 			os.Exit(2)
 		}
