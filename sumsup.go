@@ -140,7 +140,7 @@ func findfile(root string) ([]FileRecord, error) {
 			}
 			return nil
 		}
-		if strings.HasPrefix(info.Name(), ".") {
+		if path != root && strings.HasPrefix(info.Name(), ".") {
 			return  nil
 		}
 		files = append(files, FileRecord{path, info})
@@ -311,24 +311,18 @@ func cmd_update() error {
 }
 
 func cmd_checksum() error {
-	files := flag.Args()
-	for _, root := range files {
-		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	paths := flag.Args()
+	for _, root := range paths {
+		files, err := findfile(root)
+		if err != nil {
+			return nil
+		}
+		for _, file := range files {
+			checksum, err := sha256sum(file.path)
 			if err != nil {
-				return err
-			}
-			if info.IsDir() {
 				return nil
 			}
-			checksum, err := sha256sum(path)
-			if err != nil {
-				return err
-			}
-			fmt.Println(formatrecord(Record{checksum, true, path}))
-			return nil
-		})
-		if err != nil {
-			return err
+			fmt.Println(formatrecord(Record{checksum, true, normalize_for_record(file.path)}))
 		}
 	}
 	return nil
