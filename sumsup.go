@@ -135,7 +135,13 @@ func findfile(root string) ([]FileRecord, error) {
 			return err
 		}
 		if info.IsDir() {
+			if path != root && strings.HasPrefix(info.Name(), ".") {
+				return filepath.SkipDir
+			}
 			return nil
+		}
+		if strings.HasPrefix(info.Name(), ".") {
+			return  nil
 		}
 		files = append(files, FileRecord{path, info})
 		return nil
@@ -156,21 +162,71 @@ func normalize_for_record(path string) string {
 
 func cmd_check() error {
 	sumsfile := flag.Arg(0)
+	root := "."
+
+	sumsfileinfo, err := os.Stat(sumsfile)
+	if err != nil {
+		return err
+	}
+
 	records, err := readsumsfile(sumsfile)
 	if err != nil {
 		return err
 	}
+
+	db := map[string]Record{}
 	for _, record := range records {
-		checksum, err := sha256sum(record.path)
-		if err != nil {
-			return err
+		npath := normalize_for_key(record.path)
+		db[npath] = record
+	}
+
+	files, err := findfile(root)
+	if err != nil {
+		return err
+	}
+
+	fs := map[string]FileRecord{}
+	for _, file := range files {
+		// Ignore SUMSFILE
+		if os.SameFile(sumsfileinfo, file.info) {
+			continue
 		}
-		if checksum == record.checksum {
-			fmt.Printf("%s: OK\n", record.path)
+		npath := normalize_for_key(file.path)
+		fs[npath] = file
+	}
+
+	uniq := map[string]bool{}
+	for npath, _ := range db {
+		uniq[npath] = true
+	}
+	for npath, _ := range fs {
+		uniq[npath] = true
+	}
+
+	todo := make([]string, 0, len(uniq))
+	for npath, _ := range uniq {
+		todo = append(todo, npath)
+	}
+	sort.Strings(todo)
+
+	for _, npath := range todo {
+		if _, ok := fs[npath]; !ok {
+			fmt.Printf("%s: DELETED\n", db[npath].path)
+		} else if _, ok := db[npath]; !ok {
+			fmt.Printf("%s: ADDED\n", fs[npath].path)
 		} else {
-			fmt.Printf("%s: FAILED\n", record.path)
+			checksum, err := sha256sum(fs[npath].path)
+			if err != nil {
+				return err
+			}
+			if checksum == db[npath].checksum {
+				fmt.Printf("%s: OK\n", fs[npath].path)
+			} else {
+				fmt.Printf("%s: FAILED\n", fs[npath].path)
+			}
 		}
 	}
+
 	return nil
 }
 
@@ -203,10 +259,6 @@ func cmd_update() error {
 	for _, file := range files {
 		// Ignore SUMSFILE
 		if os.SameFile(sumsfileinfo, file.info) {
-			continue
-		}
-		// Ignore dot file
-		if strings.HasPrefix(file.info.Name(), ".") {
 			continue
 		}
 		npath := normalize_for_key(file.path)
