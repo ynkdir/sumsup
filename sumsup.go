@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/sha256"
+	"errors"
 	"flag"
 	"fmt"
 	"golang.org/x/text/unicode/norm"
@@ -141,7 +142,7 @@ func findfile(root string) ([]FileRecord, error) {
 			return nil
 		}
 		if path != root && strings.HasPrefix(info.Name(), ".") {
-			return  nil
+			return nil
 		}
 		files = append(files, FileRecord{path, info})
 		return nil
@@ -162,69 +163,36 @@ func normalize_for_record(path string) string {
 
 func cmd_check() error {
 	sumsfile := flag.Arg(0)
-	root := "."
-
-	sumsfileinfo, err := os.Stat(sumsfile)
-	if err != nil {
-		return err
-	}
 
 	records, err := readsumsfile(sumsfile)
 	if err != nil {
 		return err
 	}
 
-	db := map[string]Record{}
+	readerr := 0
+	matcherr := 0
 	for _, record := range records {
-		npath := normalize_for_key(record.path)
-		db[npath] = record
-	}
-
-	files, err := findfile(root)
-	if err != nil {
-		return err
-	}
-
-	fs := map[string]FileRecord{}
-	for _, file := range files {
-		// Ignore SUMSFILE
-		if os.SameFile(sumsfileinfo, file.info) {
+		checksum, err := sha256sum(record.path)
+		if err != nil {
+			fmt.Printf("%s: FAILED to read\n", record.path)
+			readerr += 1
 			continue
 		}
-		npath := normalize_for_key(file.path)
-		fs[npath] = file
-	}
-
-	uniq := map[string]bool{}
-	for npath, _ := range db {
-		uniq[npath] = true
-	}
-	for npath, _ := range fs {
-		uniq[npath] = true
-	}
-
-	todo := make([]string, 0, len(uniq))
-	for npath, _ := range uniq {
-		todo = append(todo, npath)
-	}
-	sort.Strings(todo)
-
-	for _, npath := range todo {
-		if _, ok := fs[npath]; !ok {
-			fmt.Printf("%s: DELETED\n", db[npath].path)
-		} else if _, ok := db[npath]; !ok {
-			fmt.Printf("%s: ADDED\n", fs[npath].path)
-		} else {
-			checksum, err := sha256sum(fs[npath].path)
-			if err != nil {
-				return err
-			}
-			if checksum == db[npath].checksum {
-				fmt.Printf("%s: OK\n", fs[npath].path)
-			} else {
-				fmt.Printf("%s: FAILED\n", fs[npath].path)
-			}
+		if checksum != record.checksum {
+			fmt.Printf("%s: FAILED\n", record.path)
+			matcherr += 1
+			continue
 		}
+		fmt.Printf("%s: OK\n", record.path)
+	}
+	if readerr != 0 {
+		fmt.Fprintf(os.Stderr, "WARNING: %d listed files could not be read\n", matcherr)
+	}
+	if matcherr != 0 {
+		fmt.Fprintf(os.Stderr, "WARNING: %d computed checksums dit NOT match\n", matcherr)
+	}
+	if readerr != 0 || matcherr != 0 {
+		return errors.New("CHECK FAILED")
 	}
 
 	return nil
@@ -311,19 +279,13 @@ func cmd_update() error {
 }
 
 func cmd_checksum() error {
-	paths := flag.Args()
-	for _, root := range paths {
-		files, err := findfile(root)
+	files := flag.Args()
+	for _, file := range files {
+		checksum, err := sha256sum(file)
 		if err != nil {
-			return nil
+			return err
 		}
-		for _, file := range files {
-			checksum, err := sha256sum(file.path)
-			if err != nil {
-				return nil
-			}
-			fmt.Println(formatrecord(Record{checksum, true, normalize_for_record(file.path)}))
-		}
+		fmt.Println(formatrecord(Record{checksum, true, normalize_for_record(file)}))
 	}
 	return nil
 }
