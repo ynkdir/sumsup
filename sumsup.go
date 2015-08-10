@@ -154,11 +154,15 @@ func findfile(root string) ([]FileRecord, error) {
 }
 
 func normalize_for_key(path string) string {
-	return strings.ToLower(norm.NFC.String(path))
+	return normalize_path_separator(strings.ToLower(norm.NFC.String(path)))
 }
 
 func normalize_for_record(path string) string {
-	return norm.NFC.String(path)
+	return normalize_path_separator(norm.NFC.String(path))
+}
+
+func normalize_path_separator(path string) string {
+	return strings.Replace(path, "\\", "/", -1)
 }
 
 func cmd_check() error {
