@@ -186,7 +186,7 @@ func cmd_check() error {
 		fmt.Printf("%s: OK\n", record.path)
 	}
 	if readerr != 0 {
-		fmt.Fprintf(os.Stderr, "WARNING: %d listed files could not be read\n", matcherr)
+		fmt.Fprintf(os.Stderr, "WARNING: %d listed files could not be read\n", readerr)
 	}
 	if matcherr != 0 {
 		fmt.Fprintf(os.Stderr, "WARNING: %d computed checksums dit NOT match\n", matcherr)
